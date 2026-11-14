@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Large model weights (optional - comment out if you want to push)
+# yolov8n.pt
+
+# System
+.DS_Store
+Thumbs.db

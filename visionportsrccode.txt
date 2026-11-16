@@ -1,0 +1,86 @@
+import io
+import cv2
+import numpy as np
+from fastapi import FastAPI, File, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from ultralytics import YOLO
+
+app = FastAPI(title="Indian Traffic Detection API")
+
+# Allow the HTML page to talk to this server (fixes "Failed to fetch")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Counts", "X-Total", "X-Density"],
+)
+
+model = YOLO("yolov8n.pt")  # swap with 'best.pt' for custom-trained weights
+
+# COCO class ids we care about
+VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+
+# Traffic density thresholds (change these to suit your scene)
+LOW_MAX = 5        # 0-5 vehicles   -> LOW
+MEDIUM_MAX = 10    # 6-10 vehicles  -> MEDIUM, 11+ -> HIGH
+
+
+def get_density(total):
+    if total <= LOW_MAX:
+        return "LOW", (0, 200, 0)        # green (BGR)
+    elif total <= MEDIUM_MAX:
+        return "MEDIUM", (0, 165, 255)   # orange
+    return "HIGH", (0, 0, 255)           # red
+
+
+@app.post("/detect/")
+async def detect_objects(file: UploadFile = File(...)):
+    # 1. Read the uploaded image
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    # 2. Detect ONLY vehicles
+    results = model(img, classes=list(VEHICLE_CLASSES.keys()))
+
+    # 3. Draw boxes with "name confidence" labels
+    annotated_img = results[0].plot()
+
+    # 4. Count each vehicle type
+    counts = {name: 0 for name in VEHICLE_CLASSES.values()}
+    for class_id in results[0].boxes.cls.tolist():
+        counts[VEHICLE_CLASSES[int(class_id)]] += 1
+    total = sum(counts.values())
+    density, color = get_density(total)
+
+    # 5. Draw the count panel on the image
+    lines = [
+        f"Cars: {counts['car']}",
+        f"Motorcycles: {counts['motorcycle']}",
+        f"Buses: {counts['bus']}",
+        f"Trucks: {counts['truck']}",
+        f"Total Vehicles: {total}",
+        f"Traffic Density: {density}",
+    ]
+    cv2.rectangle(annotated_img, (5, 5), (340, 15 + 30 * len(lines)), (0, 0, 0), -1)
+    for i, text in enumerate(lines):
+        line_color = color if text.startswith("Traffic") else (255, 255, 255)
+        cv2.putText(annotated_img, text, (15, 32 + 30 * i),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, line_color, 2)
+
+    # 6. Send the image back, with the numbers in headers for the web page
+    _, encoded_img = cv2.imencode(".jpg", annotated_img)
+    headers = {
+        "X-Counts": ", ".join(f"{k}: {v}" for k, v in counts.items()),
+        "X-Total": str(total),
+        "X-Density": density,
+    }
+    return StreamingResponse(io.BytesIO(encoded_img.tobytes()),
+                             media_type="image/jpeg", headers=headers)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
